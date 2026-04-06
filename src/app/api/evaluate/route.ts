@@ -12,7 +12,7 @@ export async function POST(req: NextRequest) {
   let client: GoogleGenAI | null = null;
 
   try {
-    const { url, prompt, apiKey, model, temperature, topP, topK } = await req.json();
+    const { url, prompt, apiKey, model, temperature, topP, topK, thinkingBudget } = await req.json();
 
     if (!url || !prompt || !apiKey) {
       return NextResponse.json({ error: 'Missing required parameters: url, prompt, or apiKey.' }, { status: 400 });
@@ -74,6 +74,9 @@ export async function POST(req: NextRequest) {
         temperature: temperature ? parseFloat(temperature) : 0.7,
         topP: topP ? parseFloat(topP) : 0.95,
         topK: topK ? parseInt(topK) : 64,
+        ...(typeof thinkingBudget === 'number' && thinkingBudget >= 0
+          ? { thinkingConfig: { thinkingBudget } }
+          : {}),
       }
     });
 

@@ -33,6 +33,7 @@ export default function QCApp() {
   const [prompt, setPrompt] = useState('Please evaluate this call based on standard quality metrics:\n1. Greeting\n2. Tone and empathy\n3. Issue resolution\n4. Closing');
   const [temperature, setTemperature] = useState(0.7);
   const [workers, setWorkers] = useState(3);
+  const [thinkingBudget, setThinkingBudget] = useState<number>(-1);
   
   const [records, setRecords] = useState<RecordItem[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -218,6 +219,7 @@ export default function QCApp() {
               apiKey,
               model,
               temperature,
+              thinkingBudget,
             })
           });
 
@@ -418,6 +420,37 @@ export default function QCApp() {
                 value={workers}
                 onChange={(e) => setWorkers(parseInt(e.target.value))}
               />
+            </div>
+
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="label">Thinking / Reasoning</label>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.5rem', marginTop: '0.25rem' }}>
+                {([['Off', 0], ['Low', 1024], ['Med', 8192], ['High', 24576]] as const).map(([label, val]) => (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() => setThinkingBudget(val === thinkingBudget ? -1 : val)}
+                    className="btn"
+                    style={{
+                      padding: '0.4rem 0',
+                      fontSize: '0.75rem',
+                      fontWeight: 500,
+                      border: '1px solid',
+                      borderColor: thinkingBudget === val ? 'var(--text-primary)' : 'var(--border-color)',
+                      background: thinkingBudget === val ? 'var(--text-primary)' : 'var(--bg-surface)',
+                      color: thinkingBudget === val ? 'var(--bg-card)' : 'var(--text-secondary)',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease',
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.25rem', display: 'block' }}>
+                {thinkingBudget <= 0 ? 'Model default reasoning' : `Budget: ${thinkingBudget.toLocaleString()} tokens`}
+              </span>
             </div>
           </div>
         </div>
