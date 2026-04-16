@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
-import { UploadCloud, FileSpreadsheet, Settings, Play, CheckCircle, XCircle, Loader2, Download, Copy, Eye, EyeOff, Sun, Moon, Search, Maximize, Minimize, ChevronUp, ChevronDown } from 'lucide-react';
+import { UploadCloud, FileSpreadsheet, Settings, Play, CheckCircle, XCircle, Loader2, Download, Copy, Eye, EyeOff, Sun, Moon, Search, Maximize, Minimize, ChevronUp, ChevronDown, Music2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -10,7 +10,12 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/cjs/styles/prism';
 
 interface RecordItem {
   id: number;
+  // For spreadsheet mode: the remote URL
   url: string;
+  // For audio-file mode: the local File reference
+  audioFile?: File;
+  // Display label (filename for audio mode, URL for spreadsheet mode)
+  label?: string;
   metadata?: {
     date?: string;
     mobile_number?: string;
@@ -34,7 +39,10 @@ export default function QCApp() {
   const [temperature, setTemperature] = useState(0.7);
   const [workers, setWorkers] = useState(3);
   const [thinkingBudget, setThinkingBudget] = useState<number>(-1);
-  
+
+  // Input mode: 'spreadsheet' (URLs from xlsx/csv) or 'audio' (direct file upload)
+  const [inputMode, setInputMode] = useState<'spreadsheet' | 'audio'>('spreadsheet');
+
   const [records, setRecords] = useState<RecordItem[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -49,6 +57,8 @@ export default function QCApp() {
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const audioFilesInputRef = useRef<HTMLInputElement>(null);
+  const audioFolderInputRef = useRef<HTMLInputElement>(null);
   const resultsHeaderRef = useRef<HTMLDivElement>(null);
   const mainPanelRef = useRef<HTMLElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(false);
@@ -118,6 +128,31 @@ export default function QCApp() {
     }
   };
 
+  // ── Audio Files Upload Handler ──────────────────────────────────────
+  const handleAudioFilesUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const AUDIO_EXTS = /\.(mp3|wav|ogg|m4a|aac|flac|webm|mp4|opus|wma)$/i;
+    const audioFiles = Array.from(files).filter(f => AUDIO_EXTS.test(f.name));
+
+    if (audioFiles.length === 0) {
+      alert('No supported audio files found. Supported: mp3, wav, ogg, m4a, aac, flac, webm, mp4, opus, wma');
+      return;
+    }
+
+    const newRecords: RecordItem[] = audioFiles.map((file, idx) => ({
+      id: idx,
+      url: '',        // not used in audio mode
+      audioFile: file,
+      label: file.name,
+      status: 'pending',
+    }));
+
+    setRecords(newRecords);
+  };
+
+  // ── Spreadsheet Upload Handler ────────────────────────────────────────
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -201,7 +236,9 @@ export default function QCApp() {
       return;
     }
     if (records.length === 0) {
-      alert('Please upload a spreadsheet or CSV file with recording URLs.');
+      alert(inputMode === 'audio'
+        ? 'Please upload audio files first.'
+        : 'Please upload a spreadsheet or CSV file with recording URLs.');
       return;
     }
 
@@ -220,7 +257,7 @@ export default function QCApp() {
         if (currentRecord.status === 'success') {
           completedCount++;
           setProgress(Math.round((completedCount / records.length) * 100));
-          continue; 
+          continue;
         }
 
         setRecords(prev => {
@@ -230,30 +267,59 @@ export default function QCApp() {
         });
 
         try {
-          const res = await fetch('/api/evaluate', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              url: currentRecord.url,
-              prompt,
-              apiKey,
-              model,
-              temperature,
-              thinkingBudget,
-            })
-          });
+          let data: any;
 
-          const data = await res.json();
-          
+          if (inputMode === 'audio' && currentRecord.audioFile) {
+            // Read file as base64
+            const base64 = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => {
+                const result = reader.result as string;
+                // Strip data URL prefix
+                resolve(result.split(',')[1]);
+              };
+              reader.onerror = reject;
+              reader.readAsDataURL(currentRecord.audioFile!);
+            });
+
+            const res = await fetch('/api/evaluate-file', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                fileData: base64,
+                fileName: currentRecord.audioFile.name,
+                mimeType: currentRecord.audioFile.type || undefined,
+                prompt,
+                apiKey,
+                model,
+                temperature,
+                thinkingBudget,
+              }),
+            });
+            data = await res.json();
+          } else {
+            const res = await fetch('/api/evaluate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                url: currentRecord.url,
+                prompt,
+                apiKey,
+                model,
+                temperature,
+                thinkingBudget,
+              }),
+            });
+            data = await res.json();
+          }
+
           setRecords(prev => {
             const next = [...prev];
             next[index] = {
               ...next[index],
               status: data.success ? 'success' : 'error',
               result: data.success ? data.result : (data.error || 'Unknown error'),
-              usage: data.usage || undefined
+              usage: data.usage || undefined,
             };
             return next;
           });
@@ -263,7 +329,7 @@ export default function QCApp() {
             next[index] = {
               ...next[index],
               status: 'error',
-              result: err.message || 'Failed to communicate with server.'
+              result: err.message || 'Failed to communicate with server.',
             };
             return next;
           });
@@ -288,30 +354,41 @@ export default function QCApp() {
     setRecords([]);
     setProgress(0);
     setCurrentPage(1);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    if (audioFilesInputRef.current) audioFilesInputRef.current.value = '';
+    if (audioFolderInputRef.current) audioFolderInputRef.current.value = '';
   };
 
   const exportResults = () => {
     if (records.length === 0) return;
 
-    const exportData = records.map(r => ({
-      'Recording URL': r.url,
-      'Name': r.metadata?.name || '',
-      'Mobile Number': r.metadata?.mobile_number || r.metadata?.['mobile number'] || '',
-      'Date': r.metadata?.date || '',
-      'Duration': r.metadata?.duration || '',
-      'Status': r.status,
-      'Input Tokens': r.usage?.promptTokenCount || 0,
-      'Output Tokens': r.usage?.candidatesTokenCount || 0,
-      'Result/Transcript': r.result || ''
-    }));
+    let exportData: object[];
+
+    if (inputMode === 'audio') {
+      // 2-column output for audio file mode
+      exportData = records.map(r => ({
+        'Recording Name': r.label || r.audioFile?.name || r.url,
+        'Result/Output': r.result || '',
+      }));
+    } else {
+      // Full spreadsheet export for URL mode
+      exportData = records.map(r => ({
+        'Recording URL': r.url,
+        'Name': r.metadata?.name || '',
+        'Mobile Number': r.metadata?.mobile_number || r.metadata?.['mobile number'] || '',
+        'Date': r.metadata?.date || '',
+        'Duration': r.metadata?.duration || '',
+        'Status': r.status,
+        'Input Tokens': r.usage?.promptTokenCount || 0,
+        'Output Tokens': r.usage?.candidatesTokenCount || 0,
+        'Result/Transcript': r.result || '',
+      }));
+    }
 
     const worksheet = XLSX.utils.json_to_sheet(exportData);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Evaluations");
-    XLSX.writeFile(workbook, "qc_evaluations_export.xlsx");
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Evaluations');
+    XLSX.writeFile(workbook, 'qc_evaluations_export.xlsx');
   };
 
   const copyAllResults = () => {
@@ -481,18 +558,84 @@ export default function QCApp() {
         {/* Data Source */}
         <div className="card">
           <div className="card-header" style={{ padding: '0.75rem 1rem' }}><FileSpreadsheet size={14} /> Data Source</div>
-          <div className="card-body" style={{ padding: '0.75rem 1rem' }}>
-            <div className="dropzone" onClick={() => fileInputRef.current?.click()}>
-              <input type="file" accept=".xlsx,.xls,.csv,.xlsm,.ods" style={{ display: 'none' }}
-                ref={fileInputRef} onChange={handleFileUpload} />
-              <UploadCloud size={26} color="var(--text-secondary)" style={{ marginBottom: '0.6rem' }} />
-              <div style={{ fontWeight: 500, fontSize: '0.85rem', marginBottom: '0.15rem' }}>Upload Sheet or CSV</div>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Needs <strong>recording_url</strong> column</div>
+          <div className="card-body" style={{ padding: '0.75rem 1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+
+            {/* Mode tabs */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', borderRadius: '6px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
+              <button
+                onClick={() => { setInputMode('spreadsheet'); clearData(); }}
+                style={{
+                  padding: '0.45rem 0', fontSize: '0.72rem', fontWeight: 600, border: 'none', cursor: 'pointer',
+                  background: inputMode === 'spreadsheet' ? 'var(--accent)' : 'var(--bg-surface)',
+                  color: inputMode === 'spreadsheet' ? '#fff' : 'var(--text-secondary)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.3rem', transition: 'all 0.15s',
+                }}>
+                <FileSpreadsheet size={12} /> Sheet / CSV
+              </button>
+              <button
+                onClick={() => { setInputMode('audio'); clearData(); }}
+                style={{
+                  padding: '0.45rem 0', fontSize: '0.72rem', fontWeight: 600, border: 'none', cursor: 'pointer',
+                  background: inputMode === 'audio' ? 'var(--accent)' : 'var(--bg-surface)',
+                  color: inputMode === 'audio' ? '#fff' : 'var(--text-secondary)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.3rem', transition: 'all 0.15s',
+                }}>
+                <Music2 size={12} /> Audio Files
+              </button>
             </div>
+
+            {inputMode === 'spreadsheet' ? (
+              <div className="dropzone" onClick={() => fileInputRef.current?.click()}>
+                <input type="file" accept=".xlsx,.xls,.csv,.xlsm,.ods" style={{ display: 'none' }}
+                  ref={fileInputRef} onChange={handleFileUpload} />
+                <UploadCloud size={26} color="var(--text-secondary)" style={{ marginBottom: '0.6rem' }} />
+                <div style={{ fontWeight: 500, fontSize: '0.85rem', marginBottom: '0.15rem' }}>Upload Sheet or CSV</div>
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Needs <strong>recording_url</strong> column</div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {/* Hidden inputs */}
+                <input
+                  type="file"
+                  accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.webm,.opus,.wma"
+                  multiple
+                  style={{ display: 'none' }}
+                  ref={audioFilesInputRef}
+                  onChange={handleAudioFilesUpload}
+                />
+                <input
+                  type="file"
+                  accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.webm,.opus,.wma"
+                  multiple
+                  // @ts-ignore – webkitdirectory is non-standard but widely supported
+                  webkitdirectory=""
+                  style={{ display: 'none' }}
+                  ref={audioFolderInputRef}
+                  onChange={handleAudioFilesUpload}
+                />
+                <div
+                  className="dropzone"
+                  onClick={() => audioFilesInputRef.current?.click()}
+                  style={{ padding: '0.9rem 0.75rem' }}
+                >
+                  <Music2 size={22} color="var(--text-secondary)" style={{ marginBottom: '0.4rem' }} />
+                  <div style={{ fontWeight: 500, fontSize: '0.82rem', marginBottom: '0.1rem' }}>Select Audio Files</div>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)' }}>mp3, wav, ogg, m4a, aac…</div>
+                </div>
+                <button
+                  className="btn btn-secondary"
+                  style={{ fontSize: '0.75rem', padding: '0.45rem', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }}
+                  onClick={() => audioFolderInputRef.current?.click()}
+                >
+                  <UploadCloud size={13} /> Upload Folder
+                </button>
+              </div>
+            )}
+
             {records.length > 0 && (
-              <div style={{ marginTop: '0.75rem', padding: '0.55rem 0.75rem', background: 'var(--bg-surface)', border: '1px solid var(--border-color)', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ padding: '0.55rem 0.75rem', background: 'var(--bg-surface)', border: '1px solid var(--border-color)', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem' }}>
-                  <CheckCircle size={13} color="var(--success)" /> {records.length} records
+                  <CheckCircle size={13} color="var(--success)" /> {records.length} {inputMode === 'audio' ? 'files' : 'records'}
                 </div>
                 <button onClick={clearData} disabled={isProcessing}
                   style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: isProcessing ? 'not-allowed' : 'pointer', fontSize: '0.78rem' }}>
@@ -586,10 +729,17 @@ export default function QCApp() {
                   <div className="card-header" style={{ justifyContent: 'space-between' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0 }}>
                       <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>#{rec.id + 1}</span>
-                      <a href={rec.url} target="_blank" rel="noreferrer"
-                        style={{ textDecoration: 'underline', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.8rem' }}>
-                        {rec.url}
-                      </a>
+                      {inputMode === 'audio' ? (
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                          <Music2 size={12} style={{ flexShrink: 0, color: 'var(--text-muted)' }} />
+                          {rec.label || rec.audioFile?.name}
+                        </span>
+                      ) : (
+                        <a href={rec.url} target="_blank" rel="noreferrer"
+                          style={{ textDecoration: 'underline', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.8rem' }}>
+                          {rec.url}
+                        </a>
+                      )}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexShrink: 0 }}>
                       {rec.usage && (
@@ -667,8 +817,10 @@ export default function QCApp() {
         {/* Empty state */}
         {records.length === 0 && (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', gap: '0.5rem', userSelect: 'none', minHeight: '200px' }}>
-            <FileSpreadsheet size={40} strokeWidth={1} />
-            <p style={{ fontSize: '0.875rem' }}>Upload a spreadsheet to get started</p>
+            {inputMode === 'audio' ? <Music2 size={40} strokeWidth={1} /> : <FileSpreadsheet size={40} strokeWidth={1} />}
+            <p style={{ fontSize: '0.875rem' }}>
+              {inputMode === 'audio' ? 'Upload audio files or a folder to get started' : 'Upload a spreadsheet to get started'}
+            </p>
           </div>
         )}
 
