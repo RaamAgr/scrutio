@@ -18,7 +18,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing required parameters: url, prompt, or apiKey.' }, { status: 400 });
     }
 
-    client = new GoogleGenAI({ apiKey });
+    const isVertex = apiKey.startsWith('AQ.');
+    client = new GoogleGenAI(isVertex ? { apiKey, vertexai: true } : { apiKey });
 
     // 1. Download the audio file
     console.log(`Downloading audio from ${url}`);
@@ -28,57 +29,86 @@ export async function POST(req: NextRequest) {
     }
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-
-    // 2. Save it to a temporary file to upload via SDK
-    // @google/genai currently prefers paths for file uploads, or it handles it better.
     const fileExt = url.split('.').pop()?.split('?')[0] || 'mp3';
-    tmpPath = path.join(os.tmpdir(), `audio-${Date.now()}.${fileExt}`);
-    fs.writeFileSync(tmpPath, buffer);
+    const mimeType = response.headers.get('content-type') || `audio/${fileExt === 'wav' ? 'wav' : 'mpeg'}`;
 
-    console.log(`Audio saved temporarily to ${tmpPath}`);
+    let genResult;
 
-    // 3. Upload to Gemini
-    console.log('Uploading file to Gemini API...');
-    const uploadResult = await client.files.upload({
-      file: tmpPath,
-      config: {
-        mimeType: response.headers.get('content-type') || `audio/${fileExt === 'wav' ? 'wav' : 'mpeg'}`,
-      }
-    });
-    
-    fileUri = uploadResult.name || null; // The unique identifier returned
-
-    console.log('Waiting slightly for file processing...');
-    // Sometimes the file needs a moment to be PROCESSED by Gemini
-    await new Promise(resolve => setTimeout(resolve, 3000));
-
-    // 4. Generate Content
-    console.log(`Generating content using model ${model || 'gemini-2.5-flash'}...`);
-    const genResult = await client.models.generateContent({
-      model: model || 'gemini-2.5-flash',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            {
-              fileData: {
-                fileUri: uploadResult.uri,
-                mimeType: uploadResult.mimeType,
-              }
-            },
-            { text: prompt }
-          ]
+    if (isVertex) {
+      console.log('Vertex AI detected (starts with AQ.). Using inlineData (base64) instead of Files API.');
+      genResult = await client.models.generateContent({
+        model: model || 'gemini-3-flash-preview',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                inlineData: {
+                  data: buffer.toString('base64'),
+                  mimeType: mimeType,
+                }
+              },
+              { text: prompt }
+            ]
+          }
+        ],
+        config: {
+          temperature: temperature ? parseFloat(temperature) : 0.7,
+          topP: topP ? parseFloat(topP) : 0.95,
+          topK: topK ? parseInt(topK) : 64,
+          ...(typeof thinkingBudget === 'number' && thinkingBudget >= 0
+            ? { thinkingConfig: { thinkingBudget } }
+            : {}),
         }
-      ],
-      config: {
-        temperature: temperature ? parseFloat(temperature) : 0.7,
-        topP: topP ? parseFloat(topP) : 0.95,
-        topK: topK ? parseInt(topK) : 64,
-        ...(typeof thinkingBudget === 'number' && thinkingBudget >= 0
-          ? { thinkingConfig: { thinkingBudget } }
-          : {}),
-      }
-    });
+      });
+    } else {
+      // 2. Save it to a temporary file to upload via SDK for AI Studio
+      tmpPath = path.join(os.tmpdir(), `audio-${Date.now()}.${fileExt}`);
+      fs.writeFileSync(tmpPath, buffer);
+
+      console.log(`Audio saved temporarily to ${tmpPath}`);
+
+      // 3. Upload to Gemini
+      console.log('Uploading file to Gemini API...');
+      const uploadResult = await client.files.upload({
+        file: tmpPath,
+        config: { mimeType }
+      });
+      
+      fileUri = uploadResult.name || null; // The unique identifier returned
+
+      console.log('Waiting slightly for file processing...');
+      // Sometimes the file needs a moment to be PROCESSED by Gemini
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      // 4. Generate Content
+      console.log(`Generating content using model ${model || 'gemini-2.5-flash'}...`);
+      genResult = await client.models.generateContent({
+        model: model || 'gemini-2.5-flash',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                fileData: {
+                  fileUri: uploadResult.uri,
+                  mimeType: uploadResult.mimeType,
+                }
+              },
+              { text: prompt }
+            ]
+          }
+        ],
+        config: {
+          temperature: temperature ? parseFloat(temperature) : 0.7,
+          topP: topP ? parseFloat(topP) : 0.95,
+          topK: topK ? parseInt(topK) : 64,
+          ...(typeof thinkingBudget === 'number' && thinkingBudget >= 0
+            ? { thinkingConfig: { thinkingBudget } }
+            : {}),
+        }
+      });
+    }
 
     console.log('Evaluation complete.');
 

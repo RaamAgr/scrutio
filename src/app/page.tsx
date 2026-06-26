@@ -30,12 +30,28 @@ interface RecordItem {
     candidatesTokenCount?: number;
     totalTokenCount?: number;
   };
+  originalRow?: any;
+  step2Result?: string;
+  step2Status?: 'pending' | 'processing' | 'success' | 'error';
+  step2Usage?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+  };
 }
 
 export default function QCApp() {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   const [apiKey, setApiKey] = useState('');
-  const [model, setModel] = useState('gemini-2.5-flash');
-  const [prompt, setPrompt] = useState('Please evaluate this call based on standard quality metrics:\n1. Greeting\n2. Tone and empathy\n3. Issue resolution\n4. Closing');
+  const [anthropicApiKey, setAnthropicApiKey] = useState('');
+  const [showAnthropicApiKey, setShowAnthropicApiKey] = useState(false);
+  const [vertexServiceAccount, setVertexServiceAccount] = useState('');
+  const [model, setModel] = useState('gemini-3-flash-preview');
+  const [metaModel, setMetaModel] = useState('gemini-2.5-pro');
+  const [prompt, setPrompt] = useState('You are an expert AI transcriptionist specializing in audio-to-text conversion for customer service operations. Your task is to transcribe the provided audio file with high accuracy, strictly separating the dialogue between the Call Center Agent and the Customer.\n\n### Formatting Rules\n\n1. Speaker Labels: Use exactly Agent: and Customer: to identify the speakers. Do not use names or other variations.\n2. Timestamping: Insert a timestamp in the format [HH:MM:SS] at the beginning of every turn or when a significant pause occurs.\n3. Verbatim Accuracy: Transcribe the spoken words exactly as they are uttered. Do not fix grammar, omit filler words (like um, uh, ah), or smooth out sentences.\n4. Unclear Audio: If a word or phrase is completely unintelligible, use [inaudible] instead of guessing.');
   const [temperature, setTemperature] = useState(0.7);
   const [workers, setWorkers] = useState(3);
   const [thinkingBudget, setThinkingBudget] = useState<number>(-1);
@@ -54,7 +70,10 @@ export default function QCApp() {
   const [metaResult, setMetaResult] = useState('');
   const [isMetaProcessing, setIsMetaProcessing] = useState(false);
   const [metaUsage, setMetaUsage] = useState<{promptTokenCount?: number, candidatesTokenCount?: number}>();
+  const [metaAnalysisMode, setMetaAnalysisMode] = useState<'aggregate' | 'row'>('aggregate');
+  const [metaProgress, setMetaProgress] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioFilesInputRef = useRef<HTMLInputElement>(null);
@@ -157,70 +176,138 @@ export default function QCApp() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setIsUploading(true);
+
     const isCsv = file.name.toLowerCase().endsWith('.csv');
     const reader = new FileReader();
     
     reader.onload = (event) => {
-      try {
-        let workbook;
-        
-        if (isCsv) {
-          const textData = event.target?.result as string;
-          workbook = XLSX.read(textData, { type: 'string' });
-        } else {
-          const data = new Uint8Array(event.target?.result as ArrayBuffer);
-          workbook = XLSX.read(data, { type: 'array', cellDates: true });
-        }
-
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
-        const json: any[] = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
-
-        const newRecords: RecordItem[] = [];
-        json.forEach((row, index) => {
-          let urlValue = '';
-          const metadata: any = {};
+      setTimeout(() => {
+        try {
+          let workbook;
           
-          for (let key in row) {
-            const lowerKey = key.toLowerCase().trim();
-            if (lowerKey === 'recording_url' || lowerKey.includes('recording url')) {
-              urlValue = row[key];
-            } else if (['date', 'mobile_number', 'mobile number', 'name', 'duration'].includes(lowerKey)) {
-              let val = row[key];
-              if (lowerKey === 'date' && typeof val === 'number') {
-                try {
-                  const parsed = XLSX.SSF.parse_date_code(val);
-                  const hh = String(parsed.H).padStart(2, '0');
-                  const mm = String(parsed.M).padStart(2, '0');
-                  const ss = String(parsed.S).padStart(2, '0');
-                  const timeString = (hh === '00' && mm === '00' && ss === '00') ? '' : ` ${hh}:${mm}:${ss}`;
-                  val = `${parsed.y}-${String(parsed.m).padStart(2, '0')}-${String(parsed.d).padStart(2, '0')}${timeString}`;
-                } catch (err) {}
-              } else if (val instanceof Date) {
-                const hh = String(val.getUTCHours()).padStart(2, '0');
-                const mm = String(val.getUTCMinutes()).padStart(2, '0');
-                const ss = String(val.getUTCSeconds()).padStart(2, '0');
-                const timeString = (hh === '00' && mm === '00' && ss === '00') ? '' : ` ${hh}:${mm}:${ss}`;
-                val = `${val.getUTCFullYear()}-${String(val.getUTCMonth() + 1).padStart(2, '0')}-${String(val.getUTCDate()).padStart(2, '0')}${timeString}`;
-              }
-              metadata[lowerKey.replace(' ', '_')] = val;
-            }
+          if (isCsv) {
+            const textData = event.target?.result as string;
+            workbook = XLSX.read(textData, { type: 'string' });
+          } else {
+            const data = new Uint8Array(event.target?.result as ArrayBuffer);
+            workbook = XLSX.read(data, { type: 'array', cellDates: true });
           }
-          if (urlValue) {
-            newRecords.push({
-              id: index,
-              url: String(urlValue).trim(),
-              metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
-              status: 'pending'
-            });
-          }
-        });
 
-        setRecords(newRecords);
-      } catch (err) {
-        alert('Failed to parse file. Ensure it is a valid spreadsheet/CSV and contains a recording_url column.');
-        console.error(err);
-      }
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          const json: any[] = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+
+          const isResultKey = (lowerKey: string) => {
+            const hasCore = lowerKey.includes('result') || lowerKey.includes('transcript') || lowerKey.includes('output');
+            if (!hasCore) return false;
+            const hasExcluded = lowerKey.includes('token') || 
+                                lowerKey.includes('status') || 
+                                lowerKey.includes('count') || 
+                                lowerKey.includes('cost') ||
+                                lowerKey.includes('length') ||
+                                lowerKey.includes('duration') ||
+                                lowerKey.includes('date') ||
+                                lowerKey.includes('step 2') ||
+                                lowerKey.includes('step2') ||
+                                lowerKey.includes('extraction');
+            return !hasExcluded;
+          };
+
+          const isStep2Key = (lowerKey: string) => {
+            return lowerKey === 'step 2 output' || 
+                   lowerKey.includes('step 2 result') || 
+                   lowerKey.includes('step 2 output') || 
+                   lowerKey.includes('extraction output') || 
+                   lowerKey.includes('extraction result');
+          };
+
+          const cleanMobileNumber = (val: any): string => {
+            if (val === undefined || val === null) return '';
+            const str = String(val).trim();
+            const digits = str.replace(/\D/g, '');
+            if (digits.length === 12) {
+              return digits.slice(2);
+            }
+            return str;
+          };
+
+          const newRecords: RecordItem[] = [];
+          json.forEach((row, index) => {
+            let urlValue = '';
+            let resultValue = '';
+            let labelValue = '';
+            let step2Value = '';
+            const metadata: any = {};
+            
+            for (let key in row) {
+              const lowerKey = key.toLowerCase().trim();
+              if (lowerKey === 'recording_url' || lowerKey.includes('recording url')) {
+                urlValue = row[key];
+              }
+              if (lowerKey === 'recording_name' || lowerKey.includes('recording name') || lowerKey === 'recording' || lowerKey === 'name') {
+                labelValue = row[key];
+                if (!urlValue && labelValue) {
+                  urlValue = labelValue;
+                }
+              }
+              if (isResultKey(lowerKey)) {
+                resultValue = row[key];
+              }
+              if (isStep2Key(lowerKey)) {
+                step2Value = row[key];
+              }
+              if (['date', 'mobile_number', 'mobile number', 'name', 'duration'].includes(lowerKey)) {
+                let val = row[key];
+                if (lowerKey === 'mobile_number' || lowerKey === 'mobile number') {
+                  val = cleanMobileNumber(val);
+                } else if (lowerKey === 'date' && typeof val === 'number') {
+                  try {
+                    const parsed = XLSX.SSF.parse_date_code(val);
+                    const hh = String(parsed.H).padStart(2, '0');
+                    const mm = String(parsed.M).padStart(2, '0');
+                    const ss = String(parsed.S).padStart(2, '0');
+                    const timeString = (hh === '00' && mm === '00' && ss === '00') ? '' : ` ${hh}:${mm}:${ss}`;
+                    val = `${parsed.y}-${String(parsed.m).padStart(2, '0')}-${String(parsed.d).padStart(2, '0')}${timeString}`;
+                  } catch (err) {}
+                } else if (val instanceof Date) {
+                  const hh = String(val.getUTCHours()).padStart(2, '0');
+                  const mm = String(val.getUTCMinutes()).padStart(2, '0');
+                  const ss = String(val.getUTCSeconds()).padStart(2, '0');
+                  const timeString = (hh === '00' && mm === '00' && ss === '00') ? '' : ` ${hh}:${mm}:${ss}`;
+                  val = `${val.getUTCFullYear()}-${String(val.getUTCMonth() + 1).padStart(2, '0')}-${String(val.getUTCDate()).padStart(2, '0')}${timeString}`;
+                }
+                metadata[lowerKey.replace(' ', '_')] = val;
+              }
+            }
+            if (urlValue || resultValue || step2Value) {
+              newRecords.push({
+                id: index,
+                url: urlValue ? String(urlValue).trim() : `Record #${index + 1}`,
+                label: labelValue ? String(labelValue).trim() : undefined,
+                metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+                status: resultValue ? 'success' : 'pending',
+                result: resultValue ? String(resultValue).trim() : undefined,
+                originalRow: row,
+                step2Result: step2Value ? String(step2Value).trim() : undefined,
+                step2Status: step2Value ? 'success' : undefined
+              });
+            }
+          });
+
+          setRecords(newRecords);
+        } catch (err) {
+          alert('Failed to parse file. Ensure it is a valid spreadsheet/CSV and contains a recording_url column.');
+          console.error(err);
+        } finally {
+          setIsUploading(false);
+        }
+      }, 80);
+    };
+
+    reader.onerror = () => {
+      setIsUploading(false);
+      alert('Error reading the file.');
     };
 
     if (isCsv) {
@@ -291,7 +378,7 @@ export default function QCApp() {
                 mimeType: currentRecord.audioFile.type || undefined,
                 prompt,
                 apiKey,
-                model,
+                model: model === 'claude-sonnet-4-6' ? 'gemini-3-flash-preview' : model,
                 temperature,
                 thinkingBudget,
               }),
@@ -305,7 +392,7 @@ export default function QCApp() {
                 url: currentRecord.url,
                 prompt,
                 apiKey,
-                model,
+                model: model === 'claude-sonnet-4-6' ? 'gemini-3-flash-preview' : model,
                 temperature,
                 thinkingBudget,
               }),
@@ -372,17 +459,63 @@ export default function QCApp() {
       }));
     } else {
       // Full spreadsheet export for URL mode
-      exportData = records.map(r => ({
-        'Recording URL': r.url,
-        'Name': r.metadata?.name || '',
-        'Mobile Number': r.metadata?.mobile_number || r.metadata?.['mobile number'] || '',
-        'Date': r.metadata?.date || '',
-        'Duration': r.metadata?.duration || '',
-        'Status': r.status,
-        'Input Tokens': r.usage?.promptTokenCount || 0,
-        'Output Tokens': r.usage?.candidatesTokenCount || 0,
-        'Result/Transcript': r.result || '',
-      }));
+      exportData = records.map(r => {
+        const rowData = { ...(r.originalRow || {}) };
+
+        let urlKey = 'Recording URL';
+        let resultKey = 'Result/Transcript';
+        let statusKey = 'Status';
+        let inputTokensKey = 'Input Tokens';
+        let outputTokensKey = 'Output Tokens';
+
+        if (r.originalRow) {
+          for (const key of Object.keys(r.originalRow)) {
+            const lowerKey = key.toLowerCase().trim();
+            if (lowerKey === 'recording_url' || lowerKey.includes('recording url')) {
+              urlKey = key;
+            } else if (lowerKey === 'result' || lowerKey === 'transcript' || lowerKey === 'output' || 
+                       lowerKey.includes('result/transcript') || lowerKey.includes('result/output') || 
+                       lowerKey.includes('result') || lowerKey.includes('output') || lowerKey.includes('transcript')) {
+              resultKey = key;
+            } else if (lowerKey === 'status') {
+              statusKey = key;
+            } else if (lowerKey === 'input_tokens' || lowerKey === 'input tokens') {
+              inputTokensKey = key;
+            } else if (lowerKey === 'output_tokens' || lowerKey === 'output tokens') {
+              outputTokensKey = key;
+            }
+          }
+        } else {
+          // Fallback if no original row exists
+          if (r.metadata?.name) rowData['Name'] = r.metadata.name;
+          if (r.metadata?.mobile_number) rowData['Mobile Number'] = r.metadata.mobile_number;
+          if (r.metadata?.date) rowData['Date'] = r.metadata.date;
+          if (r.metadata?.duration) rowData['Duration'] = r.metadata.duration;
+        }
+
+        rowData[urlKey] = r.url;
+        rowData[resultKey] = r.result || '';
+        rowData[statusKey] = r.status;
+        rowData[inputTokensKey] = r.usage?.promptTokenCount || 0;
+        rowData[outputTokensKey] = r.usage?.candidatesTokenCount || 0;
+
+        // Add Step 2 output if present
+        if (r.step2Result !== undefined) {
+          let step2Key = 'Step 2 Output';
+          if (r.originalRow) {
+            for (const key of Object.keys(r.originalRow)) {
+              const lowerKey = key.toLowerCase().trim();
+              if (lowerKey === 'step 2 output' || lowerKey.includes('step 2 result') || lowerKey.includes('step 2 output') || lowerKey.includes('extraction output') || lowerKey.includes('extraction result')) {
+                step2Key = key;
+                break;
+              }
+            }
+          }
+          rowData[step2Key] = r.step2Result;
+        }
+
+        return rowData;
+      });
     }
 
     const worksheet = XLSX.utils.json_to_sheet(exportData);
@@ -402,43 +535,183 @@ export default function QCApp() {
     }
   };
 
+  const copyAllMobileNumbers = () => {
+    const mobiles = records
+      .map(r => r.metadata?.mobile_number || r.metadata?.['mobile number'])
+      .filter(m => m !== undefined && m !== null && String(m).trim() !== '')
+      .map(m => String(m).trim());
+    
+    const uniqueMobiles = Array.from(new Set(mobiles));
+    
+    if (uniqueMobiles.length === 0) {
+      alert('No mobile numbers found to copy!');
+      return;
+    }
+    
+    const output = uniqueMobiles.join(', ');
+    navigator.clipboard.writeText(output).then(() => {
+      alert(`Copied ${uniqueMobiles.length} unique mobile numbers to clipboard!`);
+    });
+  };
+
   const startMetaAnalysis = async () => {
     if (records.length === 0 || isMetaProcessing) return;
     
     setIsMetaProcessing(true);
-    setMetaResult('');
-    setMetaUsage(undefined);
+    setMetaProgress(0);
 
     const successfulRecords = records.filter(r => r.status === 'success' && r.result);
-    let feed = '';
-    successfulRecords.forEach((r, idx) => {
-      feed += `\n\n--- CALL #${idx + 1} (${r.url}) ---\n${r.result}`;
-    });
 
-    try {
-      const res = await fetch('/api/meta', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          feed,
-          prompt: metaPrompt,
-          apiKey,
-          model,
-          temperature: 0.4
-        })
+    if (metaAnalysisMode === 'aggregate') {
+      setMetaResult('');
+      setMetaUsage(undefined);
+
+      let feed = '';
+      successfulRecords.forEach((r, idx) => {
+        feed += `\n\n--- CALL #${idx + 1} (${r.url}) ---\n${r.result}`;
       });
-      const data = await res.json();
-      if (data.success) {
-        setMetaResult(data.result);
-        setMetaUsage(data.usage);
-      } else {
-        setMetaResult(`**Error**: ${data.error}`);
+
+      try {
+        const res = await fetch('/api/meta', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            feed,
+            prompt: metaPrompt,
+            apiKey,
+            anthropicApiKey,
+            vertexServiceAccount,
+            model: metaModel,
+            temperature: 0.4
+          })
+        });
+        const data = await res.json();
+        if (data.success) {
+          setMetaResult(data.result);
+          setMetaUsage(data.usage);
+        } else {
+          setMetaResult(`**Error**: ${data.error}`);
+        }
+      } catch (err: any) {
+        setMetaResult(`**Failed to reach server**: ${err.message}`);
+      } finally {
+        setIsMetaProcessing(false);
       }
-    } catch (err: any) {
-      setMetaResult(`**Failed to reach server**: ${err.message}`);
-    } finally {
+    } else {
+      // Row-by-row extraction mode
+      if (successfulRecords.length === 0) {
+        alert('No successful transcripts/results found from Step 1 to process.');
+        setIsMetaProcessing(false);
+        return;
+      }
+
+      // Initialize all step2Status to pending
+      setRecords(prev => {
+        return prev.map(r => {
+          if (r.status === 'success' && r.result) {
+            return { ...r, step2Status: 'pending', step2Result: undefined, step2Usage: undefined };
+          }
+          return r;
+        });
+      });
+
+      let currentIndex = 0;
+      let completedCount = 0;
+
+      const processNextRow = async () => {
+        while (true) {
+          const idx = currentIndex++;
+          if (idx >= successfulRecords.length) break;
+
+          const record = successfulRecords[idx];
+          // Find actual index in records state array
+          const mainIndex = records.findIndex(r => r.id === record.id);
+          if (mainIndex === -1) continue;
+
+          setRecords(prev => {
+            const next = [...prev];
+            next[mainIndex] = { ...next[mainIndex], step2Status: 'processing' };
+            return next;
+          });
+
+          try {
+            const interpolatePrompt = (promptText: string, originalRow: any): string => {
+              if (!originalRow) return promptText;
+              return promptText.replace(/\{\{([^}]+)\}\}/g, (match, columnName) => {
+                const targetKey = columnName.trim().toLowerCase();
+                const matchingKey = Object.keys(originalRow).find(
+                  key => key.toLowerCase().trim() === targetKey
+                );
+                return matchingKey !== undefined ? String(originalRow[matchingKey]) : '';
+              });
+            };
+
+            const interpolatedMetaPrompt = interpolatePrompt(metaPrompt, record.originalRow);
+
+            const res = await fetch('/api/meta', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                feed: record.result,
+                prompt: interpolatedMetaPrompt,
+                apiKey,
+                anthropicApiKey,
+                vertexServiceAccount,
+                model: metaModel,
+                temperature: 0.4
+              })
+            });
+            const data = await res.json();
+
+            setRecords(prev => {
+              const next = [...prev];
+              next[mainIndex] = {
+                ...next[mainIndex],
+                step2Status: data.success ? 'success' : 'error',
+                step2Result: data.success ? data.result : (data.error || 'Unknown error'),
+                step2Usage: data.usage || undefined
+              };
+              return next;
+            });
+          } catch (err: any) {
+            setRecords(prev => {
+              const next = [...prev];
+              next[mainIndex] = {
+                ...next[mainIndex],
+                step2Status: 'error',
+                step2Result: err.message || 'Failed to communicate with server.'
+              };
+              return next;
+            });
+          }
+
+          completedCount++;
+          setMetaProgress(Math.round((completedCount / successfulRecords.length) * 100));
+        }
+      };
+
+      // Run concurrency using the 'workers' state
+      const workerPool = [];
+      const actualWorkers = Math.min(workers, successfulRecords.length);
+      for (let i = 0; i < actualWorkers; i++) {
+        workerPool.push(processNextRow());
+      }
+
+      await Promise.all(workerPool);
       setIsMetaProcessing(false);
     }
+  };
+
+  const downloadMetaReport = () => {
+    if (!metaResult) return;
+    const blob = new Blob([metaResult], { type: 'text/markdown;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', 'scrutio_synthesis_report.md');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const [showThinking, setShowThinking] = useState(false);
@@ -457,8 +730,47 @@ export default function QCApp() {
     }
   };
 
+  if (!mounted) {
+    return (
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: '100vh',
+        background: 'var(--bg-app, #090d16)',
+        color: 'var(--text-secondary, #94a3b8)',
+        fontFamily: 'system-ui, sans-serif'
+      }}>
+        <Loader2 size={32} className="spinner" style={{ color: 'var(--accent, #3b82f6)', marginBottom: '1rem', animation: 'spin 1s linear infinite' }} />
+        <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Initializing Scrutio...</span>
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell animate-fade-in">
+      {isUploading && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          background: 'rgba(9, 13, 22, 0.85)',
+          backdropFilter: 'blur(5px)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000,
+          color: 'var(--text-primary)',
+          fontFamily: 'system-ui, sans-serif'
+        }}>
+          <Loader2 size={40} className="spinner" style={{ color: 'var(--accent, #3b82f6)', marginBottom: '1rem', animation: 'spin 1s linear infinite' }} />
+          <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>Parsing spreadsheet and preparing calls...</span>
+        </div>
+      )}
 
       {/* ── FIXED TOP-RIGHT CONTROLS ── */}
       <div style={{ position: 'fixed', top: '1rem', right: '1rem', zIndex: 200, display: 'flex', gap: '0.5rem' }}>
@@ -488,7 +800,7 @@ export default function QCApp() {
               <label className="label">API Key</label>
               <div style={{ position: 'relative' }}>
                 <input type={showApiKey ? 'text' : 'password'} value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)} placeholder="AIzaSy..."
+                  onChange={(e) => setApiKey(e.target.value)} placeholder="AI... or AQ..."
                   style={{ paddingRight: '2.5rem' }} />
                 <button type="button" onClick={() => setShowApiKey(!showApiKey)}
                   style={{ position: 'absolute', right: '0.5rem', top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '0.2rem' }}>
@@ -497,11 +809,60 @@ export default function QCApp() {
               </div>
             </div>
 
+            {mounted && (model === 'claude-sonnet-4-6' || metaModel === 'claude-sonnet-4-6') && (
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="label">Anthropic API Key (Optional)</label>
+                <div style={{ position: 'relative' }}>
+                  <input type={showAnthropicApiKey ? 'text' : 'password'} value={anthropicApiKey}
+                    onChange={(e) => setAnthropicApiKey(e.target.value)} placeholder="sk-ant-..."
+                    style={{ paddingRight: '2.5rem' }} />
+                  <button type="button" onClick={() => setShowAnthropicApiKey(!showAnthropicApiKey)}
+                    style={{ position: 'absolute', right: '0.5rem', top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '0.2rem' }}>
+                    {showAnthropicApiKey ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
+                <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', marginTop: '0.2rem', display: 'block' }}>
+                  Leave blank to reuse your Google Cloud / Vertex AI API key.
+                </span>
+                </div>
+            )}
+
+            {mounted && (model === 'claude-sonnet-4-6' || metaModel === 'claude-sonnet-4-6') && !anthropicApiKey && (
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="label">Vertex Service Account JSON</label>
+                <textarea
+                  value={vertexServiceAccount}
+                  onChange={(e) => setVertexServiceAccount(e.target.value)}
+                  placeholder='{"type": "service_account", ...}'
+                  style={{
+                    width: '100%',
+                    height: '60px',
+                    resize: 'vertical',
+                    fontSize: '0.72rem',
+                    fontFamily: 'monospace',
+                    padding: '0.4rem 0.5rem',
+                    background: 'var(--bg-surface)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '4px',
+                    color: 'var(--text-primary)',
+                    outline: 'none'
+                  }}
+                />
+                <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', marginTop: '0.2rem', display: 'block' }}>
+                  Paste the contents of your GCP Service Account JSON key file.
+                </span>
+              </div>
+            )}
+
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="label">Model</label>
                 <select value={model} onChange={(e) => setModel(e.target.value)}>
+                  <optgroup label="Anthropic">
+                    <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+                  </optgroup>
                   <optgroup label="Latest Preview">
+                    <option value="gemini-3.5-flash">3.5 Flash</option>
                     <option value="gemini-3.1-pro-preview">3.1 Pro</option>
                     <option value="gemini-3-flash-preview">3 Flash</option>
                     <option value="gemini-3.1-flash-lite-preview">3.1 Lite</option>
@@ -590,7 +951,9 @@ export default function QCApp() {
                   ref={fileInputRef} onChange={handleFileUpload} />
                 <UploadCloud size={26} color="var(--text-secondary)" style={{ marginBottom: '0.6rem' }} />
                 <div style={{ fontWeight: 500, fontSize: '0.85rem', marginBottom: '0.15rem' }}>Upload Sheet or CSV</div>
-                <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Needs <strong>recording_url</strong> column</div>
+                <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', textAlign: 'center', padding: '0 0.5rem' }}>
+                  Supports raw recording URLs or previously exported Step 1 results to run Step 2 directly!
+                </div>
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
@@ -682,7 +1045,7 @@ export default function QCApp() {
           <div className="card-header">Evaluation Prompt</div>
           <div className="card-body" style={{ padding: '0.5rem 1rem' }}>
             <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)}
-              placeholder="What should the AI analyze?"
+              placeholder="Enter your custom evaluation or transcription instructions..."
               style={{ width: '100%', minHeight: '100px', resize: 'vertical', border: 'none', background: 'transparent', padding: '0.5rem 0', outline: 'none', boxShadow: 'none' }} />
           </div>
         </div>
@@ -698,6 +1061,7 @@ export default function QCApp() {
           )}
           <button className="btn btn-secondary" onClick={exportResults} disabled={records.length === 0}><Download size={15} /> Export</button>
           <button className="btn btn-secondary" onClick={copyAllResults} disabled={records.filter(r => r.result).length === 0}><Copy size={15} /> Copy All</button>
+          <button className="btn btn-secondary" onClick={copyAllMobileNumbers} disabled={records.length === 0 || !records.some(r => r.metadata?.mobile_number)}><Copy size={15} /> Copy Mobiles</button>
         </div>
 
         {/* Progress */}
@@ -727,19 +1091,53 @@ export default function QCApp() {
               {paginatedRecords.map((rec) => (
                 <div key={rec.id} className="card">
                   <div className="card-header" style={{ justifyContent: 'space-between' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0, flex: 1 }}>
                       <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>#{rec.id + 1}</span>
-                      {inputMode === 'audio' ? (
-                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                          <Music2 size={12} style={{ flexShrink: 0, color: 'var(--text-muted)' }} />
-                          {rec.label || rec.audioFile?.name}
-                        </span>
-                      ) : (
-                        <a href={rec.url} target="_blank" rel="noreferrer"
-                          style={{ textDecoration: 'underline', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.8rem' }}>
-                          {rec.url}
-                        </a>
-                      )}
+                      <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                        {inputMode === 'audio' ? (
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.35rem', fontWeight: 500 }}>
+                            <Music2 size={12} style={{ flexShrink: 0, color: 'var(--text-muted)' }} />
+                            {rec.label || rec.audioFile?.name}
+                          </span>
+                        ) : (
+                          <a href={rec.url} target="_blank" rel="noreferrer"
+                            style={{ textDecoration: 'underline', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.8rem', fontWeight: 500 }}>
+                            {rec.url}
+                          </a>
+                        )}
+                        {rec.metadata && (
+                          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginTop: '0.2rem', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                            {rec.metadata.name && <span><strong>Name:</strong> {rec.metadata.name}</span>}
+                            {rec.metadata.mobile_number !== undefined && (
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.2rem' }}>
+                                <strong>Mobile:</strong> {rec.metadata.mobile_number}
+                                <button 
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    navigator.clipboard.writeText(String(rec.metadata?.mobile_number || '')).then(() => alert('Mobile number copied!'));
+                                  }}
+                                  style={{
+                                    background: 'transparent',
+                                    border: 'none',
+                                    color: 'var(--text-muted)',
+                                    cursor: 'pointer',
+                                    padding: '0.1rem',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    outline: 'none'
+                                  }}
+                                  title="Copy Mobile Number"
+                                >
+                                  <Copy size={10} />
+                                </button>
+                              </span>
+                            )}
+                            {rec.metadata.date && <span><strong>Date:</strong> {rec.metadata.date}</span>}
+                            {rec.metadata.duration && <span><strong>Duration:</strong> {rec.metadata.duration}</span>}
+                          </div>
+                        )}
+                      </div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexShrink: 0 }}>
                       {rec.usage && (
@@ -766,6 +1164,39 @@ export default function QCApp() {
                       </div>
                     </div>
                   )}
+
+                  {/* Step 2 Output / Extraction Result */}
+                  {(rec.step2Status || rec.step2Result) && (
+                    <div className="card-body" style={{ position: 'relative', padding: '1.25rem', borderTop: '1px solid var(--border-color)', backgroundColor: 'rgba(255,255,255,0.015)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                        <h4 style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--accent, #3b82f6)', textTransform: 'uppercase', letterSpacing: '0.05em', margin: 0 }}>
+                          Step 2 Output / Extraction
+                        </h4>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          {rec.step2Usage && (
+                            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                              {rec.step2Usage.promptTokenCount}↑ {rec.step2Usage.candidatesTokenCount}↓
+                            </span>
+                          )}
+                          <span className={`status-badge ${rec.step2Status}`} style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}>
+                            {rec.step2Status === 'processing' && <Loader2 size={9} className="spinner" style={{ marginRight: '0.2rem' }} />}
+                            {rec.step2Status}
+                          </span>
+                        </div>
+                      </div>
+                      {rec.step2Result && (
+                        <>
+                          <button onClick={() => navigator.clipboard.writeText(String(rec.step2Result)).then(() => alert('Copied!'))}
+                            className="btn btn-secondary" style={{ position: 'absolute', top: '1rem', right: '1rem', padding: '0.3rem' }} title="Copy">
+                            <Copy size={13} />
+                          </button>
+                          <div className="markdown-body" style={{ marginTop: '0.5rem' }}>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]} components={codeComponents}>{String(rec.step2Result)}</ReactMarkdown>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -785,7 +1216,33 @@ export default function QCApp() {
           <div className="card">
             <div className="card-header">Level 2: Meta Analysis</div>
             <div className="card-body">
-              <p className="subtitle" style={{ marginBottom: '1rem' }}>Aggregate all successful outputs to surface macro trends.</p>
+              <p className="subtitle" style={{ marginBottom: '1rem' }}>Aggregate successful outputs or run batch post-processing/extractions row-by-row.</p>
+              
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="label">Meta-Analysis Model</label>
+                  <select value={metaModel} onChange={(e) => setMetaModel(e.target.value)} style={{ width: '100%', padding: '0.4rem 0.5rem', background: 'var(--bg-surface)', border: '1px solid var(--border-color)', borderRadius: '4px', color: 'var(--text-primary)', outline: 'none' }}>
+                    <optgroup label="Gemini (Recommended)">
+                      <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                      <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                      <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
+                      <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview</option>
+                      <option value="gemini-3-flash-preview">Gemini 3 Flash Preview</option>
+                    </optgroup>
+                    <optgroup label="Anthropic (requires sk-ant- key)">
+                      <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+                    </optgroup>
+                  </select>
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="label">Analysis Mode</label>
+                  <select value={metaAnalysisMode} onChange={(e) => setMetaAnalysisMode(e.target.value as 'aggregate' | 'row')} style={{ width: '100%', padding: '0.4rem 0.5rem', background: 'var(--bg-surface)', border: '1px solid var(--border-color)', borderRadius: '4px', color: 'var(--text-primary)', outline: 'none' }}>
+                    <option value="aggregate">Aggregate (All at once)</option>
+                    <option value="row">Row-by-Row Extraction</option>
+                  </select>
+                </div>
+              </div>
+
               <div className="form-group">
                 <label className="label">Meta Prompt</label>
                 <textarea value={metaPrompt} onChange={(e) => setMetaPrompt(e.target.value)}
@@ -793,18 +1250,52 @@ export default function QCApp() {
               </div>
               <button className="btn btn-primary" style={{ width: '100%', padding: '0.7rem' }}
                 onClick={startMetaAnalysis} disabled={isMetaProcessing}>
-                {isMetaProcessing ? <><Loader2 className="spinner" /> Synthesizing...</> : <><Play size={16} /> Synthesize Macro Trends</>}
+                {isMetaProcessing ? (
+                  <>
+                    <Loader2 className="spinner" /> 
+                    {metaAnalysisMode === 'row' ? `Processing Row-by-Row (${metaProgress}%)...` : 'Synthesizing...'}
+                  </>
+                ) : (
+                  <>
+                    <Play size={16} /> 
+                    {metaAnalysisMode === 'row' ? 'Run Row-by-Row Extraction' : 'Synthesize Macro Trends'}
+                  </>
+                )}
               </button>
-              {metaResult && (
+
+              {isMetaProcessing && metaAnalysisMode === 'row' && (
+                <div style={{ marginTop: '0.75rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', fontWeight: 500, marginBottom: '0.25rem', color: 'var(--text-secondary)' }}>
+                    <span>EXTRACTION PROGRESS</span><span>{metaProgress}%</span>
+                  </div>
+                  <div className="progress-bar"><div className="progress-fill" style={{ width: `${metaProgress}%` }} /></div>
+                </div>
+              )}
+
+              {metaAnalysisMode === 'row' && !isMetaProcessing && records.some(r => r.step2Result) && (
+                <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.75rem' }}>
+                  <button className="btn btn-secondary" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }} onClick={exportResults}>
+                    <Download size={14} /> Export Consolidated Spreadsheet
+                  </button>
+                </div>
+              )}
+
+              {metaAnalysisMode === 'aggregate' && metaResult && (
                 <div style={{ marginTop: '1.5rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border-color)', position: 'relative' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
                     <h3 className="title" style={{ fontSize: '0.95rem' }}>Synthesis Report</h3>
                     {metaUsage && <div className="status-badge" style={{ color: 'var(--text-primary)' }}>{metaUsage.promptTokenCount}↑ {metaUsage.candidatesTokenCount}↓</div>}
                   </div>
-                  <button onClick={() => navigator.clipboard.writeText(metaResult).then(() => alert('Copied!'))}
-                    className="btn btn-secondary" style={{ position: 'absolute', top: '1.25rem', right: 0, padding: '0.3rem' }}>
-                    <Copy size={13} />
-                  </button>
+                  <div style={{ position: 'absolute', top: '1.25rem', right: 0, display: 'flex', gap: '0.5rem' }}>
+                    <button onClick={() => navigator.clipboard.writeText(metaResult).then(() => alert('Copied!'))}
+                      className="btn btn-secondary" style={{ padding: '0.3rem' }} title="Copy">
+                      <Copy size={13} />
+                    </button>
+                    <button onClick={downloadMetaReport}
+                      className="btn btn-secondary" style={{ padding: '0.3rem' }} title="Download Report">
+                      <Download size={13} />
+                    </button>
+                  </div>
                   <div className="markdown-body">
                     <ReactMarkdown remarkPlugins={[remarkGfm]} components={codeComponents}>{metaResult}</ReactMarkdown>
                   </div>
