@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
-import { UploadCloud, FileSpreadsheet, Settings, Play, CheckCircle, XCircle, Loader2, Download, Copy, Eye, EyeOff, Sun, Moon, Search, Maximize, Minimize, ChevronUp, ChevronDown, Music2 } from 'lucide-react';
+import { UploadCloud, FileSpreadsheet, Settings, Play, CheckCircle, XCircle, Loader2, Download, Copy, Eye, EyeOff, Sun, Moon, Search, Maximize, Minimize, ChevronUp, ChevronDown, Music2, FileText, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -74,6 +74,7 @@ export default function QCApp() {
   const [metaProgress, setMetaProgress] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioFilesInputRef = useRef<HTMLInputElement>(null);
@@ -521,7 +522,48 @@ export default function QCApp() {
     const worksheet = XLSX.utils.json_to_sheet(exportData);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Evaluations');
-    XLSX.writeFile(workbook, 'qc_evaluations_export.xlsx');
+    XLSX.writeFile(workbook, 'scrutio_export.xlsx');
+  };
+
+  const exportAsText = () => {
+    if (records.length === 0) return;
+
+    let textContent = '';
+    records.forEach((r, idx) => {
+      textContent += `================================================================================\n`;
+      textContent += `ENTRY #${idx + 1}\n`;
+      textContent += `================================================================================\n`;
+      textContent += `Status: ${r.status}\n`;
+      
+      if (r.metadata && Object.keys(r.metadata).length > 0) {
+        textContent += `Metadata:\n`;
+        if (r.metadata.name) textContent += `  Name: ${r.metadata.name}\n`;
+        if (r.metadata.mobile_number !== undefined) textContent += `  Mobile: ${r.metadata.mobile_number}\n`;
+        if (r.metadata.date) textContent += `  Date: ${r.metadata.date}\n`;
+        if (r.metadata.duration) textContent += `  Duration: ${r.metadata.duration}\n`;
+      }
+      
+      textContent += `\n--------------------------------------------------------------------------------\n`;
+      textContent += `${r.result || 'No transcript/result available.'}\n`;
+      
+      if (r.step2Result !== undefined) {
+        textContent += `\n--------------------------------------------------------------------------------\n`;
+        textContent += `STEP 2 OUTPUT / EXTRACTION:\n`;
+        textContent += `--------------------------------------------------------------------------------\n`;
+        textContent += `${r.step2Result || 'No output available.'}\n`;
+      }
+      
+      textContent += `\n\n`;
+    });
+    
+    const blob = new Blob([textContent], { type: 'text/plain;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', 'scrutio_export.txt');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const copyAllResults = () => {
@@ -769,6 +811,164 @@ export default function QCApp() {
         }}>
           <Loader2 size={40} className="spinner" style={{ color: 'var(--accent, #3b82f6)', marginBottom: '1rem', animation: 'spin 1s linear infinite' }} />
           <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>Parsing spreadsheet and preparing calls...</span>
+        </div>
+      )}
+
+      {showExportModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          background: 'rgba(9, 13, 22, 0.85)',
+          backdropFilter: 'blur(5px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000,
+          fontFamily: 'system-ui, sans-serif'
+        }}>
+          <div className="card" style={{
+            width: '100%',
+            maxWidth: '440px',
+            background: 'var(--bg-card, #0f172a)',
+            border: '1px solid var(--border-color, #1e293b)',
+            borderRadius: '12px',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+            position: 'relative',
+            overflow: 'hidden',
+            animation: 'scale-up 0.2s ease-out'
+          }}>
+            {/* Header */}
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              padding: '1.25rem 1.5rem',
+              borderBottom: '1px solid var(--border-color)',
+            }}>
+              <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 600, color: 'var(--text-primary)' }}>Export Format</h3>
+              <button 
+                onClick={() => setShowExportModal(false)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  padding: '0.2rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: '50%',
+                  transition: 'background 0.15s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Body / Selector Cards */}
+            <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
+                Select your preferred file format for the export. The downloaded file name will start with <code style={{ background: 'var(--bg-surface)', padding: '0.1rem 0.3rem', borderRadius: '3px' }}>scrutio_</code>.
+              </p>
+
+              {/* Excel Option */}
+              <button
+                onClick={() => {
+                  exportResults();
+                  setShowExportModal(false);
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '1rem',
+                  width: '100%',
+                  padding: '1rem',
+                  background: 'var(--bg-surface, #1e293b)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  color: 'var(--text-primary)',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  transition: 'all 0.15s ease'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = 'var(--accent, #3b82f6)';
+                  e.currentTarget.style.background = 'rgba(59, 130, 246, 0.05)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = 'var(--border-color)';
+                  e.currentTarget.style.background = 'var(--bg-surface)';
+                }}
+              >
+                <div style={{
+                  background: 'rgba(34, 197, 94, 0.15)',
+                  color: '#22c55e',
+                  padding: '0.6rem',
+                  borderRadius: '6px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}>
+                  <FileSpreadsheet size={22} />
+                </div>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.15rem' }}>Excel Spreadsheet (.xlsx)</div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>Full tabular format with all metadata columns & transcript results.</div>
+                </div>
+              </button>
+
+              {/* Plain Text Option */}
+              <button
+                onClick={() => {
+                  exportAsText();
+                  setShowExportModal(false);
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '1rem',
+                  width: '100%',
+                  padding: '1rem',
+                  background: 'var(--bg-surface, #1e293b)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  color: 'var(--text-primary)',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  transition: 'all 0.15s ease'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = 'var(--accent, #3b82f6)';
+                  e.currentTarget.style.background = 'rgba(59, 130, 246, 0.05)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = 'var(--border-color)';
+                  e.currentTarget.style.background = 'var(--bg-surface)';
+                }}
+              >
+                <div style={{
+                  background: 'rgba(59, 130, 246, 0.15)',
+                  color: 'var(--accent, #3b82f6)',
+                  padding: '0.6rem',
+                  borderRadius: '6px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}>
+                  <FileText size={22} />
+                </div>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.15rem' }}>Plain Text Report (.txt)</div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>Divided entries containing recording URL, metadata, and full transcripts.</div>
+                </div>
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1059,7 +1259,7 @@ export default function QCApp() {
           {!isProcessing && records.some(r => r.status === 'error') && (
             <button className="btn btn-primary" style={{ backgroundColor: 'rgba(229,72,77,0.1)', color: 'var(--error)' }} onClick={startEvaluation}>Retry Failed</button>
           )}
-          <button className="btn btn-secondary" onClick={exportResults} disabled={records.length === 0}><Download size={15} /> Export</button>
+          <button className="btn btn-secondary" onClick={() => setShowExportModal(true)} disabled={records.length === 0}><Download size={15} /> Export</button>
           <button className="btn btn-secondary" onClick={copyAllResults} disabled={records.filter(r => r.result).length === 0}><Copy size={15} /> Copy All</button>
           <button className="btn btn-secondary" onClick={copyAllMobileNumbers} disabled={records.length === 0 || !records.some(r => r.metadata?.mobile_number)}><Copy size={15} /> Copy Mobiles</button>
         </div>
@@ -1274,7 +1474,7 @@ export default function QCApp() {
 
               {metaAnalysisMode === 'row' && !isMetaProcessing && records.some(r => r.step2Result) && (
                 <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.75rem' }}>
-                  <button className="btn btn-secondary" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }} onClick={exportResults}>
+                  <button className="btn btn-secondary" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }} onClick={() => setShowExportModal(true)}>
                     <Download size={14} /> Export Consolidated Spreadsheet
                   </button>
                 </div>
