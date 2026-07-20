@@ -450,18 +450,32 @@ export default function QCApp() {
   const exportResults = () => {
     if (records.length === 0) return;
 
+    // Excel has a strict cell length limit of 32767 characters.
+    // If text exceeds this, XLSX generation will throw a fatal error.
+    const truncateForExcel = (val: any): any => {
+      if (typeof val === 'string' && val.length > 32700) {
+        return val.substring(0, 32700) + '... (truncated due to Excel cell limit)';
+      }
+      return val;
+    };
+
     let exportData: object[];
 
     if (inputMode === 'audio') {
       // 2-column output for audio file mode
       exportData = records.map(r => ({
         'Recording Name': r.label || r.audioFile?.name || r.url,
-        'Result/Output': r.result || '',
+        'Result/Output': truncateForExcel(r.result || ''),
       }));
     } else {
       // Full spreadsheet export for URL mode
       exportData = records.map(r => {
-        const rowData = { ...(r.originalRow || {}) };
+        const rowData: any = {};
+        if (r.originalRow) {
+          for (const [key, val] of Object.entries(r.originalRow)) {
+            rowData[key] = truncateForExcel(val);
+          }
+        }
 
         let urlKey = 'Recording URL';
         let resultKey = 'Result/Transcript';
@@ -495,7 +509,7 @@ export default function QCApp() {
         }
 
         rowData[urlKey] = r.url;
-        rowData[resultKey] = r.result || '';
+        rowData[resultKey] = truncateForExcel(r.result || '');
         rowData[statusKey] = r.status;
         rowData[inputTokensKey] = r.usage?.promptTokenCount || 0;
         rowData[outputTokensKey] = r.usage?.candidatesTokenCount || 0;
@@ -512,7 +526,7 @@ export default function QCApp() {
               }
             }
           }
-          rowData[step2Key] = r.step2Result;
+          rowData[step2Key] = truncateForExcel(r.step2Result);
         }
 
         return rowData;
