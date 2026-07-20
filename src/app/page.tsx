@@ -522,7 +522,17 @@ export default function QCApp() {
     const worksheet = XLSX.utils.json_to_sheet(exportData);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Evaluations');
-    XLSX.writeFile(workbook, 'scrutio_export.xlsx');
+    
+    // Safe client-side ArrayBuffer and Blob download
+    const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=UTF-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', 'scrutio_export.xlsx');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const exportAsText = () => {
@@ -530,8 +540,22 @@ export default function QCApp() {
 
     let textContent = '';
     records.forEach((r, idx) => {
+      let entryName = '';
+      if (inputMode === 'audio') {
+        entryName = r.label || r.audioFile?.name || r.url || '';
+      } else {
+        if (r.url) {
+          try {
+            const urlObj = new URL(r.url);
+            entryName = urlObj.pathname.split('/').pop() || r.url;
+          } catch {
+            entryName = r.url;
+          }
+        }
+      }
+
       textContent += `================================================================================\n`;
-      textContent += `ENTRY #${idx + 1}\n`;
+      textContent += `ENTRY #${idx + 1}${entryName ? `: ${entryName}` : ''}\n`;
       textContent += `================================================================================\n`;
       textContent += `Status: ${r.status}\n`;
       
